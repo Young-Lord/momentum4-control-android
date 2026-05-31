@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Momentum 4 Control</string>
+    <string name="tile_label">M4 ANC</string>
+    <string name="mode_off">Off</string>
+    <string name="mode_anc">ANC</string>
+    <string name="mode_amb">Transparency</string>
+    <string name="channel_name">ANC Control</string>
+    <string name="channel_description">Momentum 4 noise control service</string>
+    <string name="notif_title">Momentum 4</string>
+    <string name="notif_controlling">Controlling noise cancellation</string>
+    <string name="notif_connecting">Connecting to device…</string>
+</resources>
