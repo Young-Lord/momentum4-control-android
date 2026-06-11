@@ -196,7 +196,7 @@ private fun requestAddTile(context: android.content.Context) {
         sm?.requestAddTileService(
             componentName,
             context.getString(R.string.tile_label),
-            android.graphics.drawable.Icon.createWithResource(context, R.drawable.ic_headphones),
+            android.graphics.drawable.Icon.createWithResource(context, R.drawable.ic_headphones_disconnected),
             { _ -> },
             { _ -> },
         )

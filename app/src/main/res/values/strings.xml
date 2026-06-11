@@ -2,6 +2,7 @@
 <resources>
     <string name="app_name">Momentum 4 Control</string>
     <string name="tile_label">M4 ANC</string>
+    <string name="tile_disconnected">Disconnected</string>
     <string name="mode_off">Off</string>
     <string name="mode_anc">ANC</string>
     <string name="mode_amb">Transparency</string>

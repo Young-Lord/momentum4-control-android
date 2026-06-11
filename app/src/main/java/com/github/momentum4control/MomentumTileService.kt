@@ -3,7 +3,6 @@ package com.github.momentum4control
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
-import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothManager
 import android.content.Context
 import android.graphics.drawable.Icon
@@ -13,7 +12,6 @@ import android.service.quicksettings.TileService
 import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.first
@@ -35,10 +33,7 @@ class MomentumTileService : TileService() {
 
     override fun onStartListening() {
         super.onStartListening()
-        scope.launch {
-            val settings = settingsStore.settingsFlow.first()
-            updateTile(settings.currentMode, settings.deviceMac.isNotEmpty())
-        }
+        scope.launch { refreshTileState() }
     }
 
     override fun onClick() {
@@ -48,12 +43,12 @@ class MomentumTileService : TileService() {
         scope.launch {
             val settings = settingsStore.settingsFlow.first()
             if (settings.deviceMac.isEmpty()) {
-                updateTile(NoiseMode.OFF, false)
+                updateTileDisconnected()
                 return@launch
             }
 
             if (client == null || client?.connectedChannel ?: -1 < 0) {
-                connectAndRefresh(settings.deviceMac, settings.currentMode)
+                connectAndRefresh(settings.deviceMac)
                 return@launch
             }
 
@@ -63,7 +58,7 @@ class MomentumTileService : TileService() {
                 if (settings.modeAmbEnabled) add(NoiseMode.AMB)
             }
             if (modes.isEmpty()) {
-                updateTile(NoiseMode.OFF, false)
+                updateTileDisconnected()
                 return@launch
             }
 
@@ -71,12 +66,51 @@ class MomentumTileService : TileService() {
             val next = modes[(idx + 1) % modes.size]
 
             settingsStore.updateCurrentMode(next)
-            updateTile(next, true)
+            updateTileConnected(next)
             applyMode(settings.deviceMac, next)
         }
     }
 
-    private suspend fun connectAndRefresh(mac: String, mode: NoiseMode) {
+    private suspend fun refreshTileState() {
+        val settings = settingsStore.settingsFlow.first()
+        if (settings.deviceMac.isEmpty()) {
+            updateTileDisconnected()
+            return
+        }
+
+        val existing = client
+        if (existing != null && existing.connectedChannel >= 0) {
+            try {
+                val state = withContext(Dispatchers.IO) { existing.getState() }
+                val mode = modeFromState(state)
+                settingsStore.updateCurrentMode(mode)
+                updateTileConnected(mode)
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to read ANC state from existing connection", e)
+                client = null
+                updateTileDisconnected()
+            }
+            return
+        }
+
+        try {
+            val c = ensureClient(settings.deviceMac)
+            if (c == null) {
+                updateTileDisconnected()
+                return
+            }
+            val state = withContext(Dispatchers.IO) { c.getState() }
+            val mode = modeFromState(state)
+            settingsStore.updateCurrentMode(mode)
+            updateTileConnected(mode)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to refresh tile state", e)
+            client = null
+            updateTileDisconnected()
+        }
+    }
+
+    private suspend fun connectAndRefresh(mac: String) {
         busy = true
         ensureNotificationChannel()
         startForeground(NOTIF_ID, buildNotification(getString(R.string.notif_connecting)))
@@ -85,20 +119,16 @@ class MomentumTileService : TileService() {
             val c = ensureClient(mac)
             if (c != null) {
                 val state = withContext(Dispatchers.IO) { c.getState() }
-                val detected = when {
-                    !state.ancEnabled -> NoiseMode.OFF
-                    state.transparency >= 90 -> NoiseMode.AMB
-                    else -> NoiseMode.ANC
-                }
+                val detected = modeFromState(state)
                 settingsStore.updateCurrentMode(detected)
-                withContext(Dispatchers.Main) { updateTile(detected, true) }
+                withContext(Dispatchers.Main) { updateTileConnected(detected) }
             } else {
-                withContext(Dispatchers.Main) { updateTile(mode, false) }
+                withContext(Dispatchers.Main) { updateTileDisconnected() }
             }
         } catch (e: Exception) {
             Log.e(TAG, "Connect and refresh failed", e)
             client = null
-            withContext(Dispatchers.Main) { updateTile(mode, false) }
+            withContext(Dispatchers.Main) { updateTileDisconnected() }
         } finally {
             busy = false
             stopForeground(STOP_FOREGROUND_REMOVE)
@@ -114,7 +144,7 @@ class MomentumTileService : TileService() {
         try {
             val c = ensureClient(mac)
                 ?: run {
-                    withContext(Dispatchers.Main) { updateTile(mode, false) }
+                    withContext(Dispatchers.Main) { updateTileDisconnected() }
                     return
                 }
 
@@ -125,11 +155,11 @@ class MomentumTileService : TileService() {
                     NoiseMode.AMB -> c.setModeAmbient()
                 }
             }
-            withContext(Dispatchers.Main) { updateTile(mode, true) }
+            withContext(Dispatchers.Main) { updateTileConnected(mode) }
         } catch (e: Exception) {
             Log.e(TAG, "Failed to apply mode $mode", e)
             client = null
-            withContext(Dispatchers.Main) { updateTile(mode, false) }
+            withContext(Dispatchers.Main) { updateTileDisconnected() }
         } finally {
             busy = false
             stopForeground(STOP_FOREGROUND_REMOVE)
@@ -158,17 +188,36 @@ class MomentumTileService : TileService() {
         }
     }
 
-    private fun updateTile(mode: NoiseMode, connected: Boolean) {
+    private fun modeFromState(state: Momentum4Client.DeviceState): NoiseMode = when {
+        !state.ancEnabled -> NoiseMode.OFF
+        state.transparency >= 90 -> NoiseMode.AMB
+        else -> NoiseMode.ANC
+    }
+
+    private fun updateTileDisconnected() {
+        val tile = qsTile ?: return
+        tile.label = getString(R.string.tile_disconnected)
+        tile.icon = Icon.createWithResource(this, R.drawable.ic_headphones_disconnected)
+        tile.state = Tile.STATE_INACTIVE
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            tile.subtitle = null
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            tile.stateDescription = getString(R.string.tile_disconnected)
+        }
+        tile.updateTile()
+    }
+
+    private fun updateTileConnected(mode: NoiseMode) {
         val tile = qsTile ?: return
         tile.label = mode.shortLabel()
         tile.icon = Icon.createWithResource(this, R.drawable.ic_headphones)
-        tile.state = when {
-            !connected -> Tile.STATE_INACTIVE
-            mode == NoiseMode.OFF -> Tile.STATE_INACTIVE
+        tile.state = when (mode) {
+            NoiseMode.OFF -> Tile.STATE_INACTIVE
             else -> Tile.STATE_ACTIVE
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            tile.subtitle = if (connected) mode.shortLabel() else "Tap to connect"
+            tile.subtitle = mode.shortLabel()
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             tile.stateDescription = mode.shortLabel()

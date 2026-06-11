@@ -35,8 +35,8 @@
         <service
             android:name=".MomentumTileService"
             android:exported="true"
-            android:icon="@drawable/ic_headphones"
-            android:label="@string/tile_label"
+            android:icon="@drawable/ic_headphones_disconnected"
+            android:label="@string/tile_disconnected"
             android:foregroundServiceType="connectedDevice"
             android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
             <intent-filter>
