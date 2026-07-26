@@ -42,14 +42,15 @@ class MomentumTileService : TileService() {
 
         scope.launch {
             val settings = settingsStore.settingsFlow.first()
-            if (settings.deviceMac.isEmpty() || !isSystemBluetoothConnected(this@MomentumTileService, settings.deviceMac)) {
+            if (settings.deviceMac.isEmpty()) {
                 dropClient()
                 updateTileDisconnected()
                 return@launch
             }
 
+            // User-initiated: allow actively establishing RFCOMM even if not yet system-connected.
             if (client == null || client?.connectedChannel ?: -1 < 0) {
-                connectAndRefresh(settings.deviceMac)
+                connectAndRefresh(settings.deviceMac, allowActiveConnect = true)
                 return@launch
             }
 
@@ -68,12 +69,13 @@ class MomentumTileService : TileService() {
 
             settingsStore.updateCurrentMode(next)
             updateTileConnected(next)
-            applyMode(settings.deviceMac, next)
+            applyMode(settings.deviceMac, next, allowActiveConnect = true)
         }
     }
 
     private suspend fun refreshTileState() {
         val settings = settingsStore.settingsFlow.first()
+        // Passive refresh: only talk when the system link is already up — never initiate.
         if (settings.deviceMac.isEmpty() || !isSystemBluetoothConnected(this, settings.deviceMac)) {
             dropClient()
             updateTileDisconnected()
@@ -96,7 +98,7 @@ class MomentumTileService : TileService() {
         }
 
         try {
-            val c = ensureClient(settings.deviceMac)
+            val c = ensureClient(settings.deviceMac, allowActiveConnect = false)
             if (c == null) {
                 updateTileDisconnected()
                 return
@@ -112,13 +114,13 @@ class MomentumTileService : TileService() {
         }
     }
 
-    private suspend fun connectAndRefresh(mac: String) {
+    private suspend fun connectAndRefresh(mac: String, allowActiveConnect: Boolean) {
         busy = true
         ensureNotificationChannel()
         startForeground(NOTIF_ID, buildNotification(getString(R.string.notif_connecting)))
 
         try {
-            val c = ensureClient(mac)
+            val c = ensureClient(mac, allowActiveConnect)
             if (c != null) {
                 val state = withContext(Dispatchers.IO) { c.getState() }
                 val detected = modeFromState(state)
@@ -137,14 +139,14 @@ class MomentumTileService : TileService() {
         }
     }
 
-    private suspend fun applyMode(mac: String, mode: NoiseMode) {
+    private suspend fun applyMode(mac: String, mode: NoiseMode, allowActiveConnect: Boolean) {
         busy = true
         ensureNotificationChannel()
         val notif = buildNotification(getString(R.string.notif_controlling))
         startForeground(NOTIF_ID, notif)
 
         try {
-            val c = ensureClient(mac)
+            val c = ensureClient(mac, allowActiveConnect)
                 ?: run {
                     withContext(Dispatchers.Main) { updateTileDisconnected() }
                     return
@@ -168,8 +170,12 @@ class MomentumTileService : TileService() {
         }
     }
 
-    private suspend fun ensureClient(mac: String): Momentum4Client? {
-        if (!isSystemBluetoothConnected(this, mac)) {
+    /**
+     * @param allowActiveConnect when true (user click), may initiate RFCOMM even if the
+     * system is not yet connected; when false (tile refresh), only proceed if already connected.
+     */
+    private suspend fun ensureClient(mac: String, allowActiveConnect: Boolean): Momentum4Client? {
+        if (!allowActiveConnect && !isSystemBluetoothConnected(this, mac)) {
             dropClient()
             return null
         }
@@ -180,8 +186,7 @@ class MomentumTileService : TileService() {
         dropClient()
         return withContext(Dispatchers.IO) {
             try {
-                // Re-check after switching threads: system may have disconnected.
-                if (!isSystemBluetoothConnected(applicationContext, mac)) {
+                if (!allowActiveConnect && !isSystemBluetoothConnected(applicationContext, mac)) {
                     return@withContext null
                 }
                 val bm = applicationContext.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
