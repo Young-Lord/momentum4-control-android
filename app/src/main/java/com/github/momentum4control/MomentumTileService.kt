@@ -42,7 +42,8 @@ class MomentumTileService : TileService() {
 
         scope.launch {
             val settings = settingsStore.settingsFlow.first()
-            if (settings.deviceMac.isEmpty()) {
+            if (settings.deviceMac.isEmpty() || !isSystemBluetoothConnected(this@MomentumTileService, settings.deviceMac)) {
+                dropClient()
                 updateTileDisconnected()
                 return@launch
             }
@@ -73,7 +74,8 @@ class MomentumTileService : TileService() {
 
     private suspend fun refreshTileState() {
         val settings = settingsStore.settingsFlow.first()
-        if (settings.deviceMac.isEmpty()) {
+        if (settings.deviceMac.isEmpty() || !isSystemBluetoothConnected(this, settings.deviceMac)) {
+            dropClient()
             updateTileDisconnected()
             return
         }
@@ -87,7 +89,7 @@ class MomentumTileService : TileService() {
                 updateTileConnected(mode)
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to read ANC state from existing connection", e)
-                client = null
+                dropClient()
                 updateTileDisconnected()
             }
             return
@@ -105,7 +107,7 @@ class MomentumTileService : TileService() {
             updateTileConnected(mode)
         } catch (e: Exception) {
             Log.e(TAG, "Failed to refresh tile state", e)
-            client = null
+            dropClient()
             updateTileDisconnected()
         }
     }
@@ -127,7 +129,7 @@ class MomentumTileService : TileService() {
             }
         } catch (e: Exception) {
             Log.e(TAG, "Connect and refresh failed", e)
-            client = null
+            dropClient()
             withContext(Dispatchers.Main) { updateTileDisconnected() }
         } finally {
             busy = false
@@ -158,7 +160,7 @@ class MomentumTileService : TileService() {
             withContext(Dispatchers.Main) { updateTileConnected(mode) }
         } catch (e: Exception) {
             Log.e(TAG, "Failed to apply mode $mode", e)
-            client = null
+            dropClient()
             withContext(Dispatchers.Main) { updateTileDisconnected() }
         } finally {
             busy = false
@@ -167,12 +169,21 @@ class MomentumTileService : TileService() {
     }
 
     private suspend fun ensureClient(mac: String): Momentum4Client? {
+        if (!isSystemBluetoothConnected(this, mac)) {
+            dropClient()
+            return null
+        }
+
         val existing = client
         if (existing != null && existing.connectedChannel >= 0) return existing
 
-        client = null
+        dropClient()
         return withContext(Dispatchers.IO) {
             try {
+                // Re-check after switching threads: system may have disconnected.
+                if (!isSystemBluetoothConnected(applicationContext, mac)) {
+                    return@withContext null
+                }
                 val bm = applicationContext.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
                 val adapter = bm.adapter ?: return@withContext null
                 val device = adapter.getRemoteDevice(mac)
@@ -182,10 +193,18 @@ class MomentumTileService : TileService() {
                 c
             } catch (e: Exception) {
                 Log.e(TAG, "Connection failed", e)
-                client = null
+                dropClient()
                 null
             }
         }
+    }
+
+    private fun dropClient() {
+        try {
+            client?.close()
+        } catch (_: Exception) {
+        }
+        client = null
     }
 
     private fun modeFromState(state: Momentum4Client.DeviceState): NoiseMode = when {
