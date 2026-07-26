@@ -1,0 +1,17 @@
+---
+description: After code changes, auto-build, adb-install, commit, and push
+alwaysApply: true
+---
+
+# Auto install & push
+
+After finishing substantive app code changes in this repo, do all of the following without waiting for the user to ask:
+
+1. **Build** debug APK with JDK 17:
+   `JAVA_HOME=/usr/lib/jvm/java-17-openjdk ./gradlew :app:assembleDebug`
+2. **Connect** phone: `adb kde` (zsh wrapper in `~/.zshrc`); fall back to a reachable `*:5555` device from `adb devices`.
+3. **Install**: `adb -s <device> install -r app/build/outputs/apk/debug/app-debug.apk`
+4. **Commit** relevant source changes (not `.kotlin/`, build outputs, or secrets) with a concise message.
+5. **Push** to `origin` (`git push`).
+
+Skip install/push only if the user explicitly says not to, or if there were no code changes.
