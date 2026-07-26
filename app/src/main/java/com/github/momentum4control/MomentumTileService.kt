@@ -50,6 +50,7 @@ class MomentumTileService : TileService() {
 
             // User-initiated: allow actively establishing RFCOMM even if not yet system-connected.
             if (client == null || client?.connectedChannel ?: -1 < 0) {
+                updateTileDisconnected()
                 connectAndRefresh(settings.deviceMac, allowActiveConnect = true)
                 return@launch
             }
